@@ -4,9 +4,9 @@ Scrape AutoTrader.co.uk by specifying search criteria, with results returned as 
 
 ## Installation
    
-Python 3:
-
-    $ pip3 install autotrader-scraper
+```console
+pip3 install autotrader-scraper
+```
 
 To update from an older version, the best way is to run `pip3 uninstall autotrader-scraper` before running the above command.
 
@@ -16,31 +16,44 @@ To update from an older version, the best way is to run `pip3 uninstall autotrad
 
 **Step 1:** Import the package
 
-    >>> from autotrader_scraper import get_cars, save_csv, save_json
+```python
+from autotrader_scraper import get_cars, save_csv, save_json
+```
 
 **Step 2:** Call `get_cars()` with your [criteria _(full list below)_](#criteria) and store the returned dictionary
 
-    >>> results = get_cars(
-            make = "Audi",
-            model = "A5",
-            postcode = "SW1A 0AA",
-            radius = 1500,
-            min_year = 2005,
-            max_year = 2020,
-            include_writeoff = "include",
-            max_attempts_per_page = 5,
-            verbose = False
-        )
+```python
+results = get_cars(
+    make = "Audi",
+    model = "A5",
+    postcode = "SW1A 0AA",
+    radius = 1500,
+    min_year = 2005,
+    max_year = 2020,
+    include_writeoff = "include",
+    max_attempts_per_page = 5,
+    verbose = False
+)
+```
+
 
 **Step 3:** Call `save_csv()` or `save_json()` with your results dictionary to output as a csv or json
 
-    >>> save_csv(results)
-    >>> save_json(results)
-    
+```python
+save_csv(results)
+```
+
+```python
+save_json(results)
+```
+
+
 (You can chain these functions together to do everything in one line)
 
-    >>> save_csv(get_cars(make = "Audi", model = "A5", ...))
-    
+```python
+save_csv(get_cars(make = "Audi", model = "A5", ...))
+```
+
 ## Criteria
 
 | Criteria / Argument | Type | Description | Values | Default Value |
