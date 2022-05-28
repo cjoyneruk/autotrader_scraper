@@ -1,3 +1,12 @@
+# Python files
 *.egg-info/
 build/
 dist/
+*.pyc
+*__pycache__
+
+# vscode
+.vscode/
+
+# Mac files
+*.DS_Store
