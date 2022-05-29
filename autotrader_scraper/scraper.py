@@ -1,145 +1,261 @@
-import requests
-import json
-import csv
+import pandas as pd
 from bs4 import BeautifulSoup
 import traceback
 import cloudscraper
+import os
+import re
 
-def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min_year=1995, max_year=1995, include_writeoff="include", max_attempts_per_page=5, verbose=False):
+class Scraper:
 
-	# To bypass Cloudflare protection
-	scraper = cloudscraper.create_scraper()
+	"""min_year=1995, max_year=1995, include_writeoff="include"
+	"""
 
-	# Basic variables
+	base_url = "https://www.autotrader.co.uk/results-car-search"
 
-	results = []
-	n_this_year_results = 0
+	def __init__(self, make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=10, **kwargs):		
+		self.results = []
 
-	url = "https://www.autotrader.co.uk/results-car-search"
+		self.search_params = {
+			"make": make,
+			"model": model,
+			"postcode": postcode,
+			"radius": radius
+		}
 
-	keywords = {}
-	keywords["mileage"] = ["miles"]
-	keywords["BHP"] = ["BHP"]
-	keywords["transmission"] = ["Automatic", "Manual"]
-	keywords["fuel"] = ["Petrol", "Diesel", "Electric", "Hybrid – Diesel/Electric Plug-in", "Hybrid – Petrol/Electric", "Hybrid – Petrol/Electric Plug-in"]
-	keywords["owners"] = ["owners"]
-	keywords["body"] = ["Coupe", "Convertible", "Estate", "Hatchback", "MPV", "Pickup", "SUV", "Saloon"]
-	keywords["ULEZ"] = ["ULEZ"]
-	keywords["year"] = [" reg)"]
-	keywords["engine"] = ["engine"]
-
-	# Set up parameters for query to autotrader.co.uk
-
-	params = {
-		"sort": "relevance",
-		"postcode": postcode,
-		"radius": radius,
-		"make": make,
-		"model": model,
-		"search-results-price-type": "total-price",
-		"search-results-year": "select-year",
-	}
-
-	if (include_writeoff == "include"):
-		params["writeoff-categories"] = "on"
-	elif (include_writeoff == "exclude"):
-		params["exclude-writeoff-categories"] = "on"
-	elif (include_writeoff == "writeoff-only"):
-		params["only-writeoff-categories"] = "on"
+		self.search_params.update(kwargs)
 		
-	year = min_year
-	page = 1
-	attempt = 1
+	@staticmethod
+	def _get_regex(pattern, string, type_=str, group_no=1):
+
+		regex = re.search(pattern=pattern, string=string)
+
+		if regex:
+			return type_(regex.group(group_no))
+		
+		return None
+
+	@staticmethod
+	def _get_from_list(word_list, string):
+
+		for el in word_list:
+			if el in string:
+				return el
+		
+		return None
+
+	def _get_doors(self, info):
+		return self._get_regex(r"([0-9])dr", info, type_=int)
+
+	def _get_year(self, specs):
+		return self._get_regex(r"\b([0-9]{4})\b", specs, type_=int)
+
+	def _get_registration(self, specs):
+		return self._get_regex(r"\(([0-9]{2}) reg\)", specs, type_=int)
+
+	def _get_mileage(self, specs):
+		
+		miles = self._get_regex(r"\s([,0-9]+) miles\s", specs)
+
+		return int(''.join(re.findall(r"[0-9]+", miles)))
+
+	def _get_engine(self, specs):
+		return self._get_regex(r"\b([\.0-9]+)L\b", specs, type_=float)
+
+	def _get_bhp(self, specs):
+		return self._get_regex(r"\b([0-9]+)(PS|HP|BHP)\b", specs, type_=int)
+
+	def _get_transmission(self, specs):
+		
+		transmission_types = ["Automatic", "Manual"]
+
+		return self._get_from_list(transmission_types, specs)
+
+	def _get_owners(self, specs):
+		return self._get_regex(r"\b([0-9]+) owner(s)?\b", specs, type_=int)
+
+	def _get_fuel(self, specs):
+		
+		fuel_types = ["Petrol", "Diesel", "Electric", "Hybrid – Diesel/Electric Plug-in", "Hybrid – Petrol/Electric", "Hybrid – Petrol/Electric Plug-in"]
+
+		return self._get_from_list(fuel_types, specs)
+
+	def _get_body(self, specs):
+
+		body_types = ["Coupe", "Convertible", "Estate", "Hatchback", "MPV", "Pickup", "SUV", "Saloon"]
+
+		return self._get_from_list(body_types, specs)
+	
+	def _get_ulez(self, specs):
+		return "ULEZ" in specs
+
+	def get_car(self, article):
+
+		# Get base car details
+		model_name = article.find("h3", {"class": "product-card-details__title"}).text.strip()
+
+		model_info = article.find("p", {"class": "product-card-details__subtitle"}).text.strip()
+
+		car = {
+			"model_name": model_name,
+			"model_info": model_info,
+			"doors": self._get_doors(model_info)
+		}
+
+		# Price indicator
+		badges = article.find_all("li", {"class": "badge-group__item"})
+
+		car['value_indicator'] = None
+		car["write_off_category"] = None
+
+		for badge in badges:
+
+			if 'data-category' in badge.attrs:								
+
+				if badge['data-category'].strip() == "writeOff":					
+					car['write_off_category'] = badge.text.strip().split(' ')[1]
+				else:
+					car['value_indicator'] = badge.text.strip().lower()
+
+		
+
+		# Car id/url
+		link = article.find("a", {"class": "tracking-standard-link"})["href"][: article.find("a", {"class": "tracking-standard-link"})["href"].find("?")]
+
+		car['id'] = link.split('/')[-1]
+		car["link"] = os.path.join("https://www.autotrader.co.uk", link)
+
+		# Car price (convert to integer)
+		price = article.find("div", {"class": "product-card-pricing__price"}).text.strip().split("£")[-1]
+
+		car['price'] = int(''.join(price.split(',')))
+
+		# Get key specifications
+		key_spec_attributes = [
+			"year",
+			"registration",
+			"mileage",
+			"engine",
+			"bhp",
+			"transmission",
+			"owners",
+			"fuel",
+			"body",
+			"ulez"
+		]
+		
+		key_specs = article.find("ul", {"class": "listing-key-specs"}).text
+		
+		for attr in key_spec_attributes:
+
+			car[attr] = getattr(self, f'_get_{attr}')(key_specs)
+
+		# Get Seller information
+		car["seller"] = article.find("div", {"class": "product-card-seller-info__name-container"}).find("h3").text
+
+		seller_info_li = article.find("ul", {"class": "product-card-seller-info__specs"}).find_all("li")
+
+		car['location'] = seller_info_li[-1].find("span").text.strip()
+
+		car['distance'] = self._get_regex(r"\(([0-9]+) mile(s)?\)", seller_info_li[-1].text.strip(), type_=int)
+
+		if len(seller_info_li) == 2:
+
+			car["seller_rating"] = float(seller_info_li[0].find("span").text.strip())
+			car["seller_reviews"] = self._get_regex(r"([0-9]+) review(s)?", seller_info_li[0].find("a").text.strip(), type_=int)
+		else:
+
+			car["seller_rating"] = None
+			car["seller_reviews"] = None
+
+		return car
+
+	def get_car_list_from_page(self, html):
+
+		soup = BeautifulSoup(html, 'lxml')
+
+		articles = soup.find_all("article", attrs={"data-standout-type":""})
+
+		return [self.get_car(article) for article in articles]
 
 
-	try:
+	def search(self, reset_results=True, sort="Relevance", records_limit=None, max_attempts_per_page=5, verbose=False):		
+		
+		if reset_results:
+			self.results = []
 
-		while year <= max_year:
+		sort_options = {
+			"Relevance": "relevance",
+			"Price (Lowest)": "price-asc",
+			"Price (Highest)": "price-desc",
+			"Distance": "distance",
+			"Mileage": "mileage",
+			"Age (Newest first)": "year-desc",
+			"Age (Oldest first)": "year-asc",
+			"Most recent": "datedesc"
+		}
 
-			params["year-from"] = year
-			params["year-to"] = year
-			params["page"] = page
 
-			r = scraper.get(url, params=params)
-			if verbose:
-				print("Year:     ", year)
-				print("Page:     ", page)
-				print("Response: ", r)
+		if sort not in sort_options:
+			raise ValueError(f"Sort option must be in {list(sort_options.keys())}")
+		
+		self.search_params["sort"] = sort_options[sort]
+		self.search_params["search-results-price-type"] = "total-price"
+
+		scraper = cloudscraper.create_scraper()
+		
+		page = 1
+		n_cars = len(self.results)
+
+		while True:
 
 			try:
+				
+				self.search_params['page'] = page
+				response = scraper.get(self.base_url, params=self.search_params)
 
-				if r.status_code != 200: # if not successful (e.g. due to bot protection), log as an attempt
+				# Unsuccessful attempt
+				if response.status_code != 200: 
+
 					attempt = attempt + 1
 					if attempt <= max_attempts_per_page:
 						if verbose:
 							print("Exception. Starting attempt #", attempt, "and keeping at page #", page)
 					else:
-						page = page + 1
+						page += 1
 						attempt = 1
 						if verbose:
 							print("Exception. All attempts exhausted for this page. Skipping to next page #", page)
 
+				# Successful attempt
 				else:
 
-					j = r.json()
-					s = BeautifulSoup(j["html"], features="html.parser")
+					car_list = self.get_car_list_from_page(response.json()['html'])
 
-					articles = s.find_all("article", attrs={"data-standout-type":""})
-
-					# if no results or reached end of results...
-					if len(articles) == 0 or r.url[r.url.find("page=")+5:] != str(page):
-						if verbose:
-							print("Found total", n_this_year_results, "results for year", year, "across", page-1, "pages")
-							if year+1 <= max_year:
-								print("Moving on to year", year + 1)
-								print("---------------------------------")
-
-						# Increment year and reset relevant variables
-						year = year + 1
-						page = 1
-						attempt = 1
-						n_this_year_results = 0
-					else:
-						for article in articles:
-							car = {}
-							car["name"] = article.find("h3", {"class": "product-card-details__title"}).text.strip()				
-							car["link"] = "https://www.autotrader.co.uk" + article.find("a", {"class": "tracking-standard-link"})["href"][: article.find("a", {"class": "tracking-standard-link"})["href"].find("?")]
-							car["price"] = article.find("div", {"class": "product-card-pricing__price"}).text.strip()
-
-							key_specs_bs_list = article.find("ul", {"class": "listing-key-specs"}).find_all("li")
-							
-							for key_spec_bs_li in key_specs_bs_list:
-
-								key_spec_bs = key_spec_bs_li.text
-
-								if any(keyword in key_spec_bs for keyword in keywords["mileage"]):
-									car["mileage"] = int(key_spec_bs[:key_spec_bs.find(" miles")].replace(",",""))
-								elif any(keyword in key_spec_bs for keyword in keywords["BHP"]):
-									car["BHP"] = int(key_spec_bs[:key_spec_bs.find("BHP")])
-								elif any(keyword in key_spec_bs for keyword in keywords["transmission"]):
-									car["transmission"] = key_spec_bs
-								elif any(keyword in key_spec_bs for keyword in keywords["fuel"]):
-									car["fuel"] = key_spec_bs
-								elif any(keyword in key_spec_bs for keyword in keywords["owners"]):
-									car["owners"] = int(key_spec_bs[:key_spec_bs.find(" owners")])
-								elif any(keyword in key_spec_bs for keyword in keywords["body"]):
-									car["body"] = key_spec_bs
-								elif any(keyword in key_spec_bs for keyword in keywords["ULEZ"]):
-									car["ULEZ"] = key_spec_bs
-								elif any(keyword in key_spec_bs for keyword in keywords["year"]):
-									car["year"] = key_spec_bs
-								elif key_spec_bs[1] == "." and key_spec_bs[3] == "L":
-									car["engine"] = key_spec_bs
-
-							results.append(car)
-							n_this_year_results = n_this_year_results + 1
-
-						page = page + 1
-						attempt = 1
+					if len(car_list) == 0:
 
 						if verbose:
-							print("Car count: ", len(results))
-							print("---------------------------------")
+							print(f"Search complete - {n_cars} found in total")
+						break
+
+					self.results.extend(car_list)
+
+					n_cars = n_cars + len(car_list)
+
+					if verbose:
+						print(f"Page {page}: {len(car_list)} cars found")
+
+					# Increment year and reset relevant variables
+					page += 1
+					attempt = 1
+					
+				if n_cars > records_limit:
+
+					self.results = self.results[:records_limit]
+
+					if verbose:
+						print(f"Search complete - {n_cars} found in total")
+					
+					break
 
 			except KeyboardInterrupt:
 				break
@@ -151,27 +267,16 @@ def get_cars(make="BMW", model="5 SERIES", postcode="SW1A 0AA", radius=1500, min
 					if verbose:
 						print("Exception. Starting attempt #", attempt, "and keeping at page #", page)
 				else:
-					page = page + 1
+					page += 1
 					attempt = 1
 					if verbose:
 						print("Exception. All attempts exhausted for this page. Skipping to next page #", page)
 
-	except KeyboardInterrupt:
-		pass
+		return self.results
 
-	return results
+	def to_dataframe(self):
+		return pd.DataFrame.from_records(self.results)
 
-### Output functions ###
-
-def save_csv(results = [], filename = "scraper_output.csv"):
-	csv_columns = ["name", "link", "price", "mileage", "BHP", "transmission", "fuel", "owners", "body", "ULEZ", "engine", "year"]
-
-	with open(filename, "w", newline='') as f:
-		writer = csv.DictWriter(f, fieldnames=csv_columns)
-		writer.writeheader()
-		for data in results:
-			writer.writerow(data)
-
-def save_json(results = [], filename = "scraper_output.json"):
-	with open(filename, 'w') as f:
-		json.dump(results, f, sort_keys=True, indent=4, separators=(',', ': '))
+	def to_csv(self, filename):
+		df = self.to_dataframe()
+		df.to_csv(filename, index=False)
