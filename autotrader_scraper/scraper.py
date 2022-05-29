@@ -248,7 +248,7 @@ class Scraper:
 					page += 1
 					attempt = 1
 					
-				if n_cars > records_limit:
+				if records_limit and (n_cars > records_limit):
 
 					self.results = self.results[:records_limit]
 
