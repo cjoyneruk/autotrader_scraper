@@ -204,6 +204,7 @@ class Scraper:
 		scraper = cloudscraper.create_scraper()
 		
 		page = 1
+		attempt = 1
 		n_cars = len(self.results)
 
 		while True:
